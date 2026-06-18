@@ -7,6 +7,14 @@ from sqlalchemy.pool import NullPool
 from urllib.parse import quote_plus
 
 PROJECT_REF = "viqwzdcrmutgfvebszrg"
+CONNECTION_NAME = "supabase"
+
+
+def _has_streamlit_connection() -> bool:
+    try:
+        return "connections" in st.secrets and CONNECTION_NAME in st.secrets.connections
+    except Exception:
+        return False
 
 
 def _lookup_secret(*keys, default=None):
@@ -24,22 +32,24 @@ def _lookup_secret(*keys, default=None):
     return default
 
 
-def _missing_secrets_message() -> str:
-    return """
-**Database secrets not configured on Streamlit Cloud.**
+def _show_secrets_help() -> None:
+    st.error("Database secrets not configured on Streamlit Cloud.")
+    st.markdown("1. Open **Manage app** → **Settings** → **Secrets**")
+    st.markdown("2. **Delete everything** in the text box")
+    st.markdown("3. Paste **exactly** the text below (each line separate, no markdown):")
+    st.code(
+        """[connections.supabase]
+dialect = "postgresql"
+host = "aws-1-us-east-1.pooler.supabase.com"
+port = 5432
+database = "postgres"
+username = "postgres.viqwzdcrmutgfvebszrg"
+password = "0664f32de30A@"
 
-1. Open **Manage app** → **Settings** → **Secrets**
-2. **Delete everything** in the text box
-3. Paste **only** this (no markdown, no backticks):
-
-DB_PASSWORD = "0664f32de30A@"
-DB_HOST = "aws-1-us-east-1.pooler.supabase.com"
-DB_PORT = 5432
-DB_USER = "postgres.viqwzdcrmutgfvebszrg"
-DB_NAME = "postgres"
-
-4. Click **Save**, then **Reboot app** (⋮ menu → Reboot app)
-"""
+""",
+        language="toml",
+    )
+    st.markdown("4. Click **Save**, then **Reboot app** (⋮ menu → Reboot app)")
 
 
 def _normalize_database_url(database_url: str) -> str:
@@ -58,7 +68,7 @@ def _get_database_url() -> str:
 
     password = _lookup_secret("DB_PASSWORD")
     if not password:
-        st.error(_missing_secrets_message())
+        _show_secrets_help()
         st.stop()
 
     host = _lookup_secret("DB_HOST", default="aws-1-us-east-1.pooler.supabase.com")
@@ -69,12 +79,18 @@ def _get_database_url() -> str:
 
 
 @st.cache_resource
-def get_engine():
+def _get_fallback_engine():
     return create_engine(
         _get_database_url(),
         poolclass=NullPool,
         pool_pre_ping=True,
     )
+
+
+def get_engine():
+    if _has_streamlit_connection():
+        return st.connection(CONNECTION_NAME, type="sql")._instance
+    return _get_fallback_engine()
 
 
 def read_sql(query: str, params=None) -> pd.DataFrame:
