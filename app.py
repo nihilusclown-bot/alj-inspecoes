@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import qrcode
 from PIL import Image, ImageDraw, ImageFont
 import io
@@ -428,8 +429,8 @@ if menu == "➕ Cadastrar Nova Peça":
                 if not tipo:
                     st.error("❌ O Tipo da Peça é obrigatório!")
                 else:
-                    qr_code = f"PECA-{datetime.now().strftime('%Y%m%d%H%M%S')}"
-                    agora = datetime.now().strftime("%d/%m/%Y %H:%M")
+                    qr_code = f"PECA-{datetime.now(ZoneInfo('America/Sao_Paulo')).strftime('%Y%m%d%H%M%S')}"
+                    agora = datetime.now(ZoneInfo("America/Sao_Paulo")).strftime("%d/%m/%Y %H:%M")
                     desenho_bytes = desenho.read() if desenho else None
                     
                     execute("""INSERT INTO pecas
@@ -490,7 +491,7 @@ elif menu == "🔄 Atualizar Status":
                 
                 if st.button("Atualizar Status"):
                     if nova_etapa != peca['etapa']:
-                        agora = datetime.now().strftime("%d/%m/%Y %H:%M")
+                        agora = datetime.now(ZoneInfo("America/Sao_Paulo")).strftime("%d/%m/%Y %H:%M")
                         responsavel_full = f"{st.session_state.user['funcao']} - {st.session_state.user['nome']}"
                         execute("""UPDATE pecas SET etapa=:etapa, cor_atual=:cor_atual, responsavel=:responsavel,
                                             data_cadastro=:data_cadastro WHERE qr_code=:qr_code""",
@@ -513,7 +514,7 @@ elif menu == "🔄 Atualizar Status":
                     obs_conclusao = st.text_area("Observações da conclusão")
                     
                     if st.button("✅ CONCLUIR PEÇA", type="primary"):
-                        agora = datetime.now().strftime("%d/%m/%Y %H:%M")
+                        agora = datetime.now(ZoneInfo("America/Sao_Paulo")).strftime("%d/%m/%Y %H:%M")
                         responsavel = f"{st.session_state.user['funcao']} - {st.session_state.user['nome']}"
                         execute("""UPDATE pecas
                                      SET resultado=:resultado, responsavel_conclusao=:responsavel_conclusao,
@@ -769,7 +770,7 @@ elif menu == "📈 Produtividade":
         st.info("Ainda não há dados de produtividade.")
     else:
         meses_unicos = sorted(df_hist['mes'].unique(), reverse=True)
-        mes_atual = datetime.now().strftime("%Y-%m")
+        mes_atual = datetime.now(ZoneInfo("America/Sao_Paulo")).strftime("%Y-%m")
         meses_anteriores = [m for m in meses_unicos if m != mes_atual]
         
         opcoes_filtro = ["Mês Atual", "Acumulado do Ano", "─"] + meses_anteriores
@@ -858,7 +859,7 @@ elif menu == "📈 Produtividade":
             """)
             
             if periodo == "Mês Atual":
-                mes_atual = datetime.now().strftime("%Y-%m")
+                mes_atual = datetime.now(ZoneInfo("America/Sao_Paulo")).strftime("%Y-%m")
                 df_pecas_periodo = df_pecas_periodo[df_pecas_periodo['data_cadastro'].str[:7] == mes_atual.replace('-', '/')]
             elif periodo != "Acumulado do Ano" and periodo != "─":
                 df_pecas_periodo = df_pecas_periodo[df_pecas_periodo['data_cadastro'].str[:7] == periodo.replace('-', '/')]

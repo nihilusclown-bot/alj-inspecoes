@@ -5,3 +5,4 @@ sqlalchemy
 qrcode
 Pillow
 altair
+tzdata
