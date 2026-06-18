@@ -44,7 +44,7 @@ host = "aws-1-us-east-1.pooler.supabase.com"
 port = 5432
 database = "postgres"
 username = "postgres.viqwzdcrmutgfvebszrg"
-password = "0664f32de30A@"
+password = "mec447alj@teste"
 
 """,
         language="toml",
