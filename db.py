@@ -8,6 +8,7 @@ from urllib.parse import quote_plus
 
 PROJECT_REF = "viqwzdcrmutgfvebszrg"
 CONNECTION_NAME = "supabase"
+CACHE_TTL = 60
 
 
 def _has_streamlit_connection() -> bool:
@@ -93,10 +94,161 @@ def get_engine():
     return _get_fallback_engine()
 
 
-def read_sql(query: str, params=None) -> pd.DataFrame:
+def _read_sql_uncached(query: str, params=None) -> pd.DataFrame:
     return pd.read_sql(query, get_engine(), params=params)
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def _read_sql_cached(query: str, params: tuple = ()) -> pd.DataFrame:
+    params_dict = dict(params) if params else None
+    return _read_sql_uncached(query, params_dict)
+
+
+def read_sql(query: str, params=None, *, use_cache: bool = True) -> pd.DataFrame:
+    if not use_cache:
+        return _read_sql_uncached(query, params)
+    param_tuple = tuple(sorted(params.items())) if params else ()
+    return _read_sql_cached(query, param_tuple)
+
+
+def clear_query_cache() -> None:
+    _read_sql_cached.clear()
+    load_pecas_ativas_full.clear()
+    load_pecas_ativas_listagem.clear()
+    load_pecas_ativas_dropdown.clear()
+    load_pecas_concluidas_full.clear()
+    load_pecas_concluidas_resumo.clear()
+    load_peca_by_qr.clear()
+    load_historico_by_qr.clear()
+    load_historico_publico_by_qr.clear()
+    load_produtividade_historico.clear()
+    load_gerenciar_pecas.clear()
+    load_users.clear()
+    load_operadores.clear()
+    load_total_pecas_count.clear()
 
 
 def execute(query: str, params=None) -> None:
     with get_engine().begin() as conn:
         conn.execute(text(query), params or {})
+    clear_query_cache()
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def load_pecas_ativas_full() -> pd.DataFrame:
+    return _read_sql_uncached(
+        "SELECT * FROM pecas WHERE resultado IS NULL OR resultado = ''"
+    )
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def load_pecas_ativas_listagem() -> pd.DataFrame:
+    return _read_sql_uncached("""
+        SELECT qr_code, tipo_peca, etapa, status, responsavel, data_cadastro
+        FROM pecas
+        WHERE resultado IS NULL OR resultado = ''
+    """)
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def load_pecas_ativas_dropdown() -> pd.DataFrame:
+    return _read_sql_uncached("""
+        SELECT qr_code, tipo_peca
+        FROM pecas
+        WHERE resultado IS NULL OR resultado = ''
+        ORDER BY data_cadastro DESC
+    """)
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def load_pecas_concluidas_full() -> pd.DataFrame:
+    return _read_sql_uncached("SELECT * FROM pecas WHERE resultado IS NOT NULL")
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def load_pecas_concluidas_resumo() -> pd.DataFrame:
+    return _read_sql_uncached("""
+        SELECT qr_code, tipo_peca
+        FROM pecas
+        WHERE resultado IS NOT NULL
+    """)
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def load_peca_by_qr(qr: str) -> pd.DataFrame:
+    return _read_sql_uncached(
+        "SELECT * FROM pecas WHERE qr_code = %(qr)s",
+        params={"qr": qr},
+    )
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def load_historico_by_qr(qr: str) -> pd.DataFrame:
+    return _read_sql_uncached("""
+        SELECT
+            tipo_peca AS "Tipo da Peça",
+            etapa     AS "Etapa",
+            status    AS "Status",
+            responsavel AS "Responsável",
+            data      AS "Data/Hora",
+            observacao AS "Observação"
+        FROM historico
+        WHERE qr_code = %(qr)s
+        ORDER BY data ASC
+    """, params={"qr": qr})
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def load_historico_publico_by_qr(qr: str) -> pd.DataFrame:
+    return _read_sql_uncached("""
+        SELECT data AS "Data/Hora",
+               responsavel AS "Responsável",
+               etapa AS "Etapa",
+               status AS "Status",
+               observacao AS "Comentário"
+        FROM historico
+        WHERE qr_code = %(qr)s
+        ORDER BY data ASC
+    """, params={"qr": qr})
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def load_produtividade_historico() -> pd.DataFrame:
+    return _read_sql_uncached("""
+        SELECT h.*, p.etapa as etapa_atual,
+               SUBSTRING(h.data FROM 7 FOR 4) || '-' || SUBSTRING(h.data FROM 4 FOR 2) as mes
+        FROM historico h
+        LEFT JOIN pecas p ON h.qr_code = p.qr_code
+    """)
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def load_gerenciar_pecas() -> pd.DataFrame:
+    return _read_sql_uncached("""
+        SELECT
+            qr_code AS "QR Code",
+            tipo_peca AS "Tipo da Peça",
+            etapa AS "Etapa",
+            status AS "Status",
+            responsavel AS "Responsável",
+            data_cadastro AS "Data Cadastro"
+        FROM pecas
+        WHERE resultado IS NULL OR resultado = ''
+        ORDER BY data_cadastro DESC
+    """)
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def load_users() -> pd.DataFrame:
+    return _read_sql_uncached("SELECT id, nome, funcao, funcao_custom FROM users")
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def load_operadores() -> pd.DataFrame:
+    return _read_sql_uncached("SELECT funcao, nome FROM users WHERE funcao = 'Operador'")
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def load_total_pecas_count() -> int:
+    df = _read_sql_uncached("SELECT qr_code FROM pecas")
+    return len(df)

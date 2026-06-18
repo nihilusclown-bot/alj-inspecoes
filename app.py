@@ -8,7 +8,23 @@ import io
 import altair as alt
 from sqlalchemy.exc import IntegrityError
 
-from db import read_sql, execute
+from db import (
+    read_sql,
+    execute,
+    load_pecas_ativas_full,
+    load_pecas_ativas_listagem,
+    load_pecas_ativas_dropdown,
+    load_pecas_concluidas_full,
+    load_pecas_concluidas_resumo,
+    load_peca_by_qr,
+    load_historico_by_qr,
+    load_historico_publico_by_qr,
+    load_produtividade_historico,
+    load_gerenciar_pecas,
+    load_users,
+    load_operadores,
+    load_total_pecas_count,
+)
 
 st.set_page_config(page_title="ALJ Inspeções", layout="wide")
 # ==================== PÁGINA PÚBLICA VIA QR CODE ====================
@@ -18,7 +34,7 @@ if "qr_code" in query_params:
     if isinstance(qr, list):
         qr = qr[0]
     
-    df = read_sql("SELECT * FROM pecas WHERE qr_code = %(qr)s", params={"qr": qr})
+    df = load_peca_by_qr(qr)
     if not df.empty:
         peca = df.iloc[0]
         
@@ -35,16 +51,7 @@ if "qr_code" in query_params:
         st.divider()
         st.subheader("📜 Histórico e Comentários")
         
-        df_hist = read_sql("""
-            SELECT data AS "Data/Hora",
-                   responsavel AS "Responsável",
-                   etapa AS "Etapa",
-                   status AS "Status",
-                   observacao AS "Comentário"
-            FROM historico
-            WHERE qr_code = %(qr)s
-            ORDER BY data ASC
-        """, params={"qr": qr})
+        df_hist = load_historico_publico_by_qr(qr)
         
         if not df_hist.empty:
             st.dataframe(df_hist, use_container_width=True, hide_index=True)
@@ -118,7 +125,7 @@ if not st.session_state.user:
                             SELECT * FROM users
                             WHERE (nome = %(login)s OR email = %(login)s)
                             AND senha = %(senha)s
-                        """, params={"login": nome_ou_email, "senha": senha})
+                        """, params={"login": nome_ou_email, "senha": senha}, use_cache=False)
                         if not df_user.empty:
                             st.session_state.user = df_user.iloc[0].to_dict()
                             st.rerun()
@@ -161,7 +168,7 @@ if not st.session_state.user:
                 df = read_sql("""
                     SELECT nome, email FROM users
                     WHERE nome = %(input)s OR email = %(input)s
-                """, params={"input": recover_input})
+                """, params={"input": recover_input}, use_cache=False)
                 if not df.empty:
                     st.success(f"✅ Usuário encontrado: **{df.iloc[0]['nome']}**")
                     nova_senha_recover = st.text_input("Digite sua **nova senha**", type="password")
@@ -251,7 +258,7 @@ if st.session_state.user.get('nome') == 'admin':
 
     # 2) Gerenciar Usuários
     with st.sidebar.expander("👥 Gerenciar Usuários"):
-        df_users = read_sql("SELECT id, nome, funcao, funcao_custom FROM users")
+        df_users = load_users()
         st.dataframe(df_users, use_container_width=True, hide_index=True)
 
         user_to_manage = st.selectbox("Selecione o usuário para editar/excluir", df_users["nome"].tolist())
@@ -373,7 +380,7 @@ if menu == "➕ Cadastrar Nova Peça":
     
     # ==================== SELEÇÃO DO RESPONSÁVEL COM CARGO ====================
     if st.session_state.user['funcao'] in ["Gestor", "Supervisor", "Administrador"]:
-        df_op = read_sql("SELECT funcao, nome FROM users WHERE funcao = 'Operador'")
+        df_op = load_operadores()
         op_options = [f"{row['funcao']} - {row['nome']}" for _, row in df_op.iterrows()]
         responsavel_selecionado = st.selectbox("Operador responsável pela peça", op_options or ["Sem operador"], key="resp_cadastro")
     else:
@@ -386,7 +393,7 @@ if menu == "➕ Cadastrar Nova Peça":
         st.subheader("📄 Etiqueta Gerada com Sucesso!")
         
         qr = st.session_state.last_pdf
-        df = read_sql("SELECT * FROM pecas WHERE qr_code = %(qr)s", params={"qr": qr})
+        df = load_peca_by_qr(qr)
         if not df.empty:
             peca = df.iloc[0]
             
@@ -465,12 +472,7 @@ if menu == "➕ Cadastrar Nova Peça":
 elif menu == "🔄 Atualizar Status":
     st.header("Atualizar Status da Peça")
     
-    df_nao_concluidas = read_sql("""
-        SELECT qr_code, tipo_peca
-        FROM pecas
-        WHERE resultado IS NULL OR resultado = ''
-        ORDER BY data_cadastro DESC
-    """)
+    df_nao_concluidas = load_pecas_ativas_dropdown()
 
     PLACEHOLDER = "Selecione uma peça..."
 
@@ -492,7 +494,7 @@ elif menu == "🔄 Atualizar Status":
 
     if not df_nao_concluidas.empty and escolha != PLACEHOLDER:
         qr_input = escolha.split(" - ")[0]
-        df = read_sql("SELECT * FROM pecas WHERE qr_code = %(qr)s", params={"qr": qr_input})
+        df = load_peca_by_qr(qr_input)
         if not df.empty:
             peca = df.iloc[0]
             if peca.get('resultado') in ["Aprovado", "Reprovado"]:
@@ -556,7 +558,7 @@ elif menu == "🔄 Atualizar Status":
         and escolha != PLACEHOLDER
         and qr_download == escolha.split(" - ")[0]
     ):
-        df = read_sql("SELECT * FROM pecas WHERE qr_code = %(qr)s", params={"qr": qr_download})
+        df = load_peca_by_qr(qr_download)
         if not df.empty:
             peca = df.iloc[0]
 
@@ -587,18 +589,7 @@ elif menu == "🔄 Atualizar Status":
 elif menu == "🗑️ Gerenciar Peças":
     st.header("🗑️ Gerenciar Peças")
     
-    df = read_sql("""
-        SELECT
-            qr_code AS "QR Code",
-            tipo_peca AS "Tipo da Peça",
-            etapa AS "Etapa",
-            status AS "Status",
-            responsavel AS "Responsável",
-            data_cadastro AS "Data Cadastro"
-        FROM pecas
-        WHERE resultado IS NULL OR resultado = ''
-        ORDER BY data_cadastro DESC
-    """)
+    df = load_gerenciar_pecas()
     
     if not df.empty:
         st.dataframe(df, use_container_width=True, hide_index=True)
@@ -630,7 +621,7 @@ elif menu == "🗑️ Gerenciar Peças":
 # ==================== DASHBOARD GERAL ====================
 elif menu == "📊 Dashboard Geral":
     st.header("📊 Visão Geral da Produção")
-    df = read_sql("SELECT * FROM pecas WHERE resultado IS NULL OR resultado = ''")
+    df = load_pecas_ativas_full()
     if not df.empty:
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Total Ativas", len(df))
@@ -652,17 +643,7 @@ elif menu == "📊 Dashboard Geral":
 elif menu == "📋 Lista de Peças":
     st.header("Lista Completa de Peças")
         
-    df_andamento = read_sql("""
-        SELECT
-            qr_code,
-            tipo_peca,
-            etapa,
-            status,
-            responsavel,
-            data_cadastro
-        FROM pecas
-        WHERE resultado IS NULL OR resultado = ''
-    """)
+    df_andamento = load_pecas_ativas_listagem()
     
     if not df_andamento.empty:
         df_andamento = df_andamento.rename(columns={
@@ -674,7 +655,7 @@ elif menu == "📋 Lista de Peças":
         })
         df_andamento = df_andamento[["qr_code", "Tipo da Peça", "Etapa", "Status", "Responsável", "Data Atualização"]]
       
-    df_concluidas = read_sql("SELECT * FROM pecas WHERE resultado IS NOT NULL")
+    df_concluidas = load_pecas_concluidas_full()
     
     tab_and, tab_conc = st.tabs(["Peças em Andamento", "Peças Concluídas"])
     
@@ -713,17 +694,8 @@ elif menu == "📋 Lista de Peças":
 elif menu == "📖 Histórico por Peça":
     st.header("Histórico Completo")
         
-    df_andamento = read_sql("""
-        SELECT qr_code, tipo_peca
-        FROM pecas
-        WHERE resultado IS NULL OR resultado = ''
-    """)
-
-    df_concluidas = read_sql("""
-        SELECT qr_code, tipo_peca
-        FROM pecas
-        WHERE resultado IS NOT NULL
-    """)
+    df_andamento = load_pecas_ativas_dropdown()
+    df_concluidas = load_pecas_concluidas_resumo()
     
     tab_and, tab_conc = st.tabs(["Peças em Andamento", "Peças Concluídas"])
     
@@ -732,18 +704,7 @@ elif menu == "📖 Histórico por Peça":
             lista_and = df_andamento["qr_code"].tolist()
             qr_sel_and = st.selectbox("Selecione o QR Code (Em Andamento)", lista_and, key="hist_and")
             if qr_sel_and:
-                hist = read_sql("""
-                    SELECT
-                        tipo_peca AS "Tipo da Peça",
-                        etapa     AS "Etapa",
-                        status    AS "Status",
-                        responsavel AS "Responsável",
-                        data      AS "Data/Hora",
-                        observacao AS "Observação"
-                    FROM historico
-                    WHERE qr_code = %(qr)s
-                    ORDER BY data ASC
-                """, params={"qr": qr_sel_and})
+                hist = load_historico_by_qr(qr_sel_and)
                 st.dataframe(hist, use_container_width=True, hide_index=True)
         else:
             st.info("Nenhuma peça em andamento.")
@@ -753,18 +714,7 @@ elif menu == "📖 Histórico por Peça":
             lista_conc = df_concluidas["qr_code"].tolist()
             qr_sel_conc = st.selectbox("Selecione o QR Code (Concluídas)", lista_conc, key="hist_conc")
             if qr_sel_conc:
-                hist = read_sql("""
-                    SELECT
-                        tipo_peca AS "Tipo da Peça",
-                        etapa     AS "Etapa",
-                        status    AS "Status",
-                        responsavel AS "Responsável",
-                        data      AS "Data/Hora",
-                        observacao AS "Observação"
-                    FROM historico
-                    WHERE qr_code = %(qr)s
-                    ORDER BY data ASC
-                """, params={"qr": qr_sel_conc})
+                hist = load_historico_by_qr(qr_sel_conc)
                 st.dataframe(hist, use_container_width=True, hide_index=True)
         else:
             st.info("Nenhuma peça concluída ainda.")
@@ -773,12 +723,7 @@ elif menu == "📖 Histórico por Peça":
 elif menu == "📈 Produtividade":
     st.header("📈 Produtividade da Equipe")
     
-    df_hist = read_sql("""
-        SELECT h.*, p.etapa as etapa_atual,
-               SUBSTRING(h.data FROM 7 FOR 4) || '-' || SUBSTRING(h.data FROM 4 FOR 2) as mes
-        FROM historico h
-        LEFT JOIN pecas p ON h.qr_code = p.qr_code
-    """)
+    df_hist = load_produtividade_historico()
     
     if df_hist.empty:
         st.info("Ainda não há dados de produtividade.")
@@ -798,6 +743,13 @@ elif menu == "📈 Produtividade":
             df_filtrado = df_hist[df_hist['mes'] == periodo]
         else:
             df_filtrado = df_hist.copy()
+
+        df_insp = df_hist[
+            df_hist["status"].isin(["Atualizado", "Concluída"])
+            & df_hist["responsavel"].astype(str).str.startswith("Inspetor de Qualidade")
+        ][["responsavel", "status", "id"]]
+
+        df_pecas_concluidas = load_pecas_concluidas_full()
 
         tab_op, tab_insp, tab_top3, tab_geral = st.tabs(["🔧 Operadores", "🔍 Inspetores", "🏆 Top 3", "📊 Ranking Geral da Fábrica"])
 
@@ -825,14 +777,7 @@ elif menu == "📈 Produtividade":
         # ====================== INSPETORES ======================
         with tab_insp:
             st.subheader("Desempenho dos Inspetores")
-            
-            df_insp = read_sql("""
-                SELECT h.responsavel, h.status, h.id
-                FROM historico h
-                WHERE h.status IN ('Atualizado', 'Concluída')
-                  AND h.responsavel LIKE 'Inspetor de Qualidade%%'
-            """)
-            
+
             if df_insp.empty:
                 st.info("Ainda não há atualizações de Inspetores.")
                 insp = pd.DataFrame()  
@@ -866,11 +811,7 @@ elif menu == "📈 Produtividade":
         with tab_geral:
             st.subheader("📊 Ranking Geral da Fábrica")
             
-            df_pecas_periodo = read_sql("""
-                SELECT resultado, etapa, data_cadastro
-                FROM pecas
-                WHERE resultado IS NOT NULL
-            """)
+            df_pecas_periodo = df_pecas_concluidas[["resultado", "etapa", "data_cadastro"]]
             
             if periodo == "Mês Atual":
                 mes_atual = datetime.now(ZoneInfo("America/Sao_Paulo")).strftime("%Y-%m")
@@ -888,7 +829,7 @@ elif menu == "📈 Produtividade":
                     '❌ Reprovadas'
                 ],
                 'Quantidade': [
-                    len(read_sql("SELECT qr_code FROM pecas")),
+                    load_total_pecas_count(),
                     len(df_filtrado[df_filtrado['etapa_atual'] == 'Inspeção Preliminar']),
                     len(df_filtrado[df_filtrado['etapa_atual'] == 'Retrabalho/Não Conforme']),
                     len(df_filtrado[df_filtrado['etapa_atual'] == 'Inspeção Final']),
@@ -902,12 +843,7 @@ elif menu == "📈 Produtividade":
 elif menu == "🖨️ Gerar Etiqueta":
     st.header("Gerar Etiqueta Colorida")
     
-    df_nao_concluidas = read_sql("""
-        SELECT qr_code, tipo_peca
-        FROM pecas
-        WHERE resultado IS NULL OR resultado = ''
-        ORDER BY data_cadastro DESC
-    """)
+    df_nao_concluidas = load_pecas_ativas_dropdown()
     
     opcoes = ["🔍 Digitar código manualmente"] + [
         f"{row['qr_code']} - {row['tipo_peca']}"
@@ -922,7 +858,7 @@ elif menu == "🖨️ Gerar Etiqueta":
         qr_input = escolha.split(" - ")[0]
     
     if qr_input:
-        df = read_sql("SELECT * FROM pecas WHERE qr_code = %(qr)s", params={"qr": qr_input})
+        df = load_peca_by_qr(qr_input)
         if not df.empty:
             peca = df.iloc[0]
             
