@@ -462,23 +462,19 @@ elif menu == "🔄 Atualizar Status":
         WHERE resultado IS NULL OR resultado = ''
         ORDER BY data_cadastro DESC
     """)
-   
-    opcoes = ["🔍 Digitar código manualmente"] + [
-        f"{row['qr_code']} - {row['tipo_peca']}" 
-        for _, row in df_nao_concluidas.iterrows()
-    ]
-    
-    escolha = st.selectbox(
-        "Selecione a peça ou digite o código",
-        opcoes
-    )
-  
-    if escolha == "🔍 Digitar código manualmente":
-        qr_input = st.text_input("Digite o QR Code da peça manualmente")
+
+    if df_nao_concluidas.empty:
+        st.info("Nenhuma peça em andamento no momento.")
     else:
-        qr_input = escolha.split(" - ")[0]   
-    
-    if qr_input:
+        opcoes = [
+            f"{row['qr_code']} - {row['tipo_peca']}"
+            for _, row in df_nao_concluidas.iterrows()
+        ]
+
+        escolha = st.selectbox("Selecione a peça", opcoes)
+        qr_input = escolha.split(" - ")[0]
+
+    if not df_nao_concluidas.empty and qr_input:
         df = read_sql("SELECT * FROM pecas WHERE qr_code = %(qr)s", params={"qr": qr_input})
         if not df.empty:
             peca = df.iloc[0]
