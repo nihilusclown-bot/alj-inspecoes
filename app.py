@@ -463,18 +463,20 @@ elif menu == "🔄 Atualizar Status":
         ORDER BY data_cadastro DESC
     """)
 
+    PLACEHOLDER = "Selecione uma peça..."
+
     if df_nao_concluidas.empty:
         st.info("Nenhuma peça em andamento no momento.")
     else:
-        opcoes = [
+        opcoes = [PLACEHOLDER] + [
             f"{row['qr_code']} - {row['tipo_peca']}"
             for _, row in df_nao_concluidas.iterrows()
         ]
 
-        escolha = st.selectbox("Selecione a peça", opcoes)
-        qr_input = escolha.split(" - ")[0]
+        escolha = st.selectbox("Selecione a peça", opcoes, index=0)
 
-    if not df_nao_concluidas.empty and qr_input:
+    if not df_nao_concluidas.empty and escolha != PLACEHOLDER:
+        qr_input = escolha.split(" - ")[0]
         df = read_sql("SELECT * FROM pecas WHERE qr_code = %(qr)s", params={"qr": qr_input})
         if not df.empty:
             peca = df.iloc[0]
