@@ -203,7 +203,15 @@ menu_options = [
     "📈 Produtividade", "🖨️ Gerar Etiqueta"
 ]
 menu = st.sidebar.radio("Menu", menu_options, key="main_menu")
-  
+
+if menu != "🔄 Atualizar Status":
+    st.session_state.pop("atualizar_status_last_pdf", None)
+
+
+def _clear_atualizar_download():
+    st.session_state.pop("atualizar_status_last_pdf", None)
+
+
 # ==================== CONFIGURAÇÕES GLOBAIS ====================
 APP_URL = "https://mec447.streamlit.app"
 
@@ -474,7 +482,13 @@ elif menu == "🔄 Atualizar Status":
             for _, row in df_nao_concluidas.iterrows()
         ]
 
-        escolha = st.selectbox("Selecione a peça", opcoes, index=0)
+        escolha = st.selectbox(
+            "Selecione a peça",
+            opcoes,
+            index=0,
+            key="atualizar_status_peca",
+            on_change=_clear_atualizar_download,
+        )
 
     if not df_nao_concluidas.empty and escolha != PLACEHOLDER:
         qr_input = escolha.split(" - ")[0]
@@ -503,7 +517,7 @@ elif menu == "🔄 Atualizar Status":
                                   {"qr_code": qr_input, "tipo_peca": peca['tipo_peca'], "etapa": nova_etapa,
                                    "cor": nova_etapa, "status": "Atualizado", "responsavel": responsavel_full,
                                    "data": agora, "observacao": nova_obs})
-                        st.session_state.last_pdf = qr_input   # ← ativa o botão de download
+                        st.session_state.atualizar_status_last_pdf = qr_input
                         st.toast("✅ Status atualizado!", icon="🎉")
                         st.rerun()
                 
@@ -528,21 +542,26 @@ elif menu == "🔄 Atualizar Status":
                                   {"qr_code": qr_input, "tipo_peca": peca['tipo_peca'], "etapa": peca['etapa'],
                                    "cor": peca['cor_atual'], "status": "Concluída", "responsavel": responsavel,
                                    "data": agora, "observacao": f"Resultado: {resultado_final} | {obs_conclusao}"})
-                        st.session_state.last_pdf = qr_input   # ← ativa o botão de download
+                        st.session_state.atualizar_status_last_pdf = qr_input
                         st.success(f"Peça concluída como **{resultado_final}**!")
                         st.rerun()
         else:
             st.error("QR Code não encontrado!")
 
     # ==================== DOWNLOAD DA ETIQUETA ====================
-    if st.session_state.get("last_pdf"):
-        qr = st.session_state.last_pdf
-        df = read_sql("SELECT * FROM pecas WHERE qr_code = %(qr)s", params={"qr": qr})
+    qr_download = st.session_state.get("atualizar_status_last_pdf")
+    if (
+        qr_download
+        and not df_nao_concluidas.empty
+        and escolha != PLACEHOLDER
+        and qr_download == escolha.split(" - ")[0]
+    ):
+        df = read_sql("SELECT * FROM pecas WHERE qr_code = %(qr)s", params={"qr": qr_download})
         if not df.empty:
             peca = df.iloc[0]
-            
+
             img = gerar_etiqueta(
-                qr_code=qr,
+                qr_code=qr_download,
                 tipo_peca=peca["tipo_peca"],
                 cadastrado_por=peca.get("cadastrado_por", peca["responsavel"]),
                 responsavel=peca["responsavel"],
@@ -551,23 +570,18 @@ elif menu == "🔄 Atualizar Status":
                 data_atualizacao=peca.get("data_conclusao") or peca["data_cadastro"],
                 atualizado_por=f"{st.session_state.user['funcao']} - {st.session_state.user['nome']}"
             )
-            
+
             buf = io.BytesIO()
             img.save(buf, format="PDF", resolution=300)
             buf.seek(0)
             st.download_button(
                 label="📄 **BAIXAR ETIQUETA ATUALIZADA**",
                 data=buf.getvalue(),
-                file_name=f"etiqueta_{qr}.pdf",
+                file_name=f"etiqueta_{qr_download}.pdf",
                 mime="application/pdf",
                 type="primary",
                 use_container_width=True
             )
-            
-            if st.button("🧹 Limpar e preparar nova atualização", type="secondary", use_container_width=True):
-                if "last_pdf" in st.session_state:
-                    del st.session_state.last_pdf
-                st.rerun()
               
 # ==================== GERENCIAR PEÇAS ====================
 elif menu == "🗑️ Gerenciar Peças":
