@@ -7,11 +7,42 @@ from urllib.parse import quote_plus
 PROJECT_REF = "viqwzdcrmutgfvebszrg"
 
 
-def _get_database_url() -> str:
-    if "DATABASE_URL" in st.secrets and st.secrets["DATABASE_URL"]:
-        return st.secrets["DATABASE_URL"]
+def _missing_secrets_message() -> str:
+    return """
+**Database secrets not configured.**
 
-    password = st.secrets["DB_PASSWORD"]
+Add these to **Streamlit Cloud → Settings → Secrets** (or `.streamlit/secrets.toml` locally):
+
+```toml
+DB_PASSWORD = "your-supabase-database-password"
+DB_HOST = "aws-1-us-east-1.pooler.supabase.com"
+DB_PORT = 5432
+DB_USER = "postgres.viqwzdcrmutgfvebszrg"
+DB_NAME = "postgres"
+```
+
+Or use a single connection string:
+
+```toml
+DATABASE_URL = "postgresql://postgres.viqwzdcrmutgfvebszrg:YOUR_PASSWORD@aws-1-us-east-1.pooler.supabase.com:5432/postgres"
+```
+"""
+
+
+def _get_database_url() -> str:
+    database_url = st.secrets.get("DATABASE_URL")
+    if database_url:
+        if database_url.startswith("postgres://"):
+            database_url = database_url.replace("postgres://", "postgresql+psycopg2://", 1)
+        elif database_url.startswith("postgresql://") and "+psycopg2" not in database_url:
+            database_url = database_url.replace("postgresql://", "postgresql+psycopg2://", 1)
+        return database_url
+
+    password = st.secrets.get("DB_PASSWORD")
+    if not password:
+        st.error(_missing_secrets_message())
+        st.stop()
+
     host = st.secrets.get("DB_HOST", "aws-1-us-east-1.pooler.supabase.com")
     port = st.secrets.get("DB_PORT", 5432)
     user = st.secrets.get("DB_USER", f"postgres.{PROJECT_REF}")
