@@ -1,0 +1,5 @@
+.streamlit/secrets.toml
+pecas.db
+__pycache__/
+*.pyc
+terminals/
