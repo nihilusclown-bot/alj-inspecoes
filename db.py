@@ -10,6 +10,12 @@ PROJECT_REF = "viqwzdcrmutgfvebszrg"
 CONNECTION_NAME = "supabase"
 CACHE_TTL = 60
 
+# Exclude desenho_tecnico (BYTEA) — not serializable by @st.cache_data
+PECAS_COLS = """
+    qr_code, tipo_peca, cor_atual, status, etapa, responsavel, cadastrado_por,
+    data_cadastro, resultado, data_conclusao, responsavel_conclusao
+"""
+
 
 def _has_streamlit_connection() -> bool:
     try:
@@ -137,7 +143,7 @@ def execute(query: str, params=None) -> None:
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def load_pecas_ativas_full() -> pd.DataFrame:
     return _read_sql_uncached(
-        "SELECT * FROM pecas WHERE resultado IS NULL OR resultado = ''"
+        f"SELECT {PECAS_COLS} FROM pecas WHERE resultado IS NULL OR resultado = ''"
     )
 
 
@@ -162,7 +168,9 @@ def load_pecas_ativas_dropdown() -> pd.DataFrame:
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def load_pecas_concluidas_full() -> pd.DataFrame:
-    return _read_sql_uncached("SELECT * FROM pecas WHERE resultado IS NOT NULL")
+    return _read_sql_uncached(
+        f"SELECT {PECAS_COLS} FROM pecas WHERE resultado IS NOT NULL"
+    )
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
@@ -177,9 +185,20 @@ def load_pecas_concluidas_resumo() -> pd.DataFrame:
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def load_peca_by_qr(qr: str) -> pd.DataFrame:
     return _read_sql_uncached(
-        "SELECT * FROM pecas WHERE qr_code = %(qr)s",
+        f"SELECT {PECAS_COLS} FROM pecas WHERE qr_code = %(qr)s",
         params={"qr": qr},
     )
+
+
+def load_desenho_tecnico_by_qr(qr: str):
+    """Uncached — BYTEA cannot be stored in @st.cache_data."""
+    df = _read_sql_uncached(
+        "SELECT desenho_tecnico FROM pecas WHERE qr_code = %(qr)s",
+        params={"qr": qr},
+    )
+    if df.empty:
+        return None
+    return df.iloc[0]["desenho_tecnico"]
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)

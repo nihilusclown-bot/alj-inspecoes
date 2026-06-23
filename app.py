@@ -24,6 +24,7 @@ from db import (
     load_users,
     load_operadores,
     load_total_pecas_count,
+    load_desenho_tecnico_by_qr,
 )
 
 st.set_page_config(page_title="ALJ Inspeções", layout="wide")
@@ -61,8 +62,8 @@ if "qr_code" in query_params:
         # ==================== DESENHO TÉCNICO ====================
         st.divider()
         st.subheader("🖼️ Desenho Técnico")
-        if peca.get("desenho_tecnico"):
-            desenho_bytes = peca["desenho_tecnico"]
+        desenho_bytes = load_desenho_tecnico_by_qr(qr)
+        if desenho_bytes:
             try:
                 with st.expander("🔍 Visualizar desenho ampliado (zoom)", expanded=False):
                     st.image(desenho_bytes, caption="Desenho Técnico", use_container_width=True)
