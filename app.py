@@ -221,7 +221,12 @@ def _clear_atualizar_download():
 
 
 # ==================== CONFIGURAÇÕES GLOBAIS ====================
-APP_URL = "https://mec447.streamlit.app"
+def get_app_url() -> str:
+    try:
+        url = st.secrets.get("APP_URL", "https://mec447.streamlit.app")
+    except Exception:
+        url = "https://mec447.streamlit.app"
+    return str(url).rstrip("/")
 
 CORES = {
     "Usinagem": "#1E90FF",
@@ -292,7 +297,7 @@ if st.session_state.user.get('nome') == 'admin':
 
 # ==================== FUNÇÕES QR ====================
 def criar_qr_pil(qr_code):
-    full_url = f"{APP_URL}?qr_code={qr_code}"
+    full_url = f"{get_app_url()}?qr_code={qr_code}"
     qr = qrcode.QRCode(version=1, box_size=10, border=4)
     qr.add_data(full_url)
     qr.make(fit=True)
