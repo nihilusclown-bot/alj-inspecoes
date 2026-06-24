@@ -221,11 +221,13 @@ def _clear_atualizar_download():
 
 
 # ==================== CONFIGURAÇÕES GLOBAIS ====================
+APP_URL = "https://alj447.streamlit.app"
+
 def get_app_url() -> str:
     try:
-        url = st.secrets.get("APP_URL", "https://mec447.streamlit.app")
+        url = st.secrets.get("APP_URL", APP_URL)
     except Exception:
-        url = "https://mec447.streamlit.app"
+        url = APP_URL
     return str(url).rstrip("/")
 
 CORES = {
