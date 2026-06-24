@@ -42,6 +42,13 @@ def _filtrar_pecas_por_mes(df: pd.DataFrame, mes_ref: str) -> pd.DataFrame:
     return df[df["_mes"] == mes_ref].drop(columns="_mes")
 
 
+def _safe_pct_round(numerator: pd.Series, denominator: pd.Series, decimals: int = 1) -> pd.Series:
+    num = pd.to_numeric(numerator, errors="coerce").fillna(0.0)
+    den = pd.to_numeric(denominator, errors="coerce").fillna(0.0)
+    pct = num.div(den.where(den != 0)).mul(100)
+    return pct.replace([float("inf"), float("-inf")], 0.0).fillna(0.0).round(decimals)
+
+
 st.set_page_config(page_title="ALJ Inspeções", layout="wide")
 # ==================== PÁGINA PÚBLICA VIA QR CODE ====================
 query_params = st.query_params
@@ -810,12 +817,8 @@ elif menu == "📈 Produtividade":
             op = op.merge(concluidas, on='responsavel', how='left').fillna(0)
             op = op.astype({'Total_Cadastradas': 'int', 'Concluidas': 'int', 'Aprovadas': 'int', 'Retrabalho': 'int'})
             
-            op['Taxa_Conclusao_%'] = (
-                op['Concluidas'] / op['Total_Cadastradas'].replace(0, pd.NA) * 100
-            ).round(1)
-            op['Taxa_Aprovacao_%'] = (
-                op['Aprovadas'] / op['Concluidas'].replace(0, pd.NA) * 100
-            ).round(1)
+            op['Taxa_Conclusao_%'] = _safe_pct_round(op['Concluidas'], op['Total_Cadastradas'])
+            op['Taxa_Aprovacao_%'] = _safe_pct_round(op['Aprovadas'], op['Concluidas'])
             
             st.dataframe(op, use_container_width=True)
 
@@ -833,15 +836,11 @@ elif menu == "📈 Produtividade":
                 ).reset_index()
                 
                 insp = insp.astype({'Total_Inspecionadas': 'int', 'Aprovadas': 'int'})
-                insp['Taxa_Aprovacao_%'] = (
-                    insp['Aprovadas'] / insp['Total_Inspecionadas'].replace(0, pd.NA) * 100
-                ).round(1)
+                insp['Taxa_Aprovacao_%'] = _safe_pct_round(insp['Aprovadas'], insp['Total_Inspecionadas'])
 
                 reprovadas = df_insp[df_insp['status'] == 'Concluída'].groupby('responsavel').size().reset_index(name='Reprovadas')
                 insp = insp.merge(reprovadas, on='responsavel', how='left').fillna(0)
-                insp['Taxa_Reprovacao_%'] = (
-                    insp['Reprovadas'] / insp['Total_Inspecionadas'].replace(0, pd.NA) * 100
-                ).round(1)
+                insp['Taxa_Reprovacao_%'] = _safe_pct_round(insp['Reprovadas'], insp['Total_Inspecionadas'])
                 
                 st.dataframe(insp[['responsavel', 'Total_Inspecionadas', 'Aprovadas', 'Reprovadas',
                                   'Taxa_Aprovacao_%', 'Taxa_Reprovacao_%']], use_container_width=True)
