@@ -190,7 +190,29 @@ def load_peca_by_qr(qr: str) -> pd.DataFrame:
     )
 
 
-def load_desenho_tecnico_by_qr(qr: str):
+def normalize_bytea(value) -> bytes | None:
+    """Convert PostgreSQL BYTEA (often memoryview) to bytes for Streamlit widgets."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, memoryview):
+        return value.tobytes()
+    if isinstance(value, bytearray):
+        return bytes(value)
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, str):
+        if value.startswith("\\x"):
+            return bytes.fromhex(value[2:])
+        return value.encode()
+    return bytes(value)
+
+
+def load_desenho_tecnico_by_qr(qr: str) -> bytes | None:
     """Uncached — BYTEA cannot be stored in @st.cache_data."""
     df = _read_sql_uncached(
         "SELECT desenho_tecnico FROM pecas WHERE qr_code = %(qr)s",
@@ -198,7 +220,8 @@ def load_desenho_tecnico_by_qr(qr: str):
     )
     if df.empty:
         return None
-    return df.iloc[0]["desenho_tecnico"]
+    data = normalize_bytea(df.iloc[0]["desenho_tecnico"])
+    return data if data else None
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)

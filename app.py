@@ -64,26 +64,29 @@ if "qr_code" in query_params:
         st.subheader("🖼️ Desenho Técnico")
         desenho_bytes = load_desenho_tecnico_by_qr(qr)
         if desenho_bytes:
-            try:
-                with st.expander("🔍 Visualizar desenho ampliado (zoom)", expanded=False):
+            if desenho_bytes.startswith(b"%PDF"):
+                mime, ext = "application/pdf", ".pdf"
+            elif desenho_bytes.startswith(b"\x89PNG"):
+                mime, ext = "image/png", ".png"
+            elif desenho_bytes.startswith(b"\xff\xd8\xff"):
+                mime, ext = "image/jpeg", ".jpg"
+            else:
+                mime, ext = "application/octet-stream", ".bin"
+
+            with st.expander("🔍 Visualizar desenho ampliado (zoom)", expanded=False):
+                if mime.startswith("image/"):
                     st.image(desenho_bytes, caption="Desenho Técnico", use_container_width=True)
-                
-                st.download_button(
-                    label="⬇️ Baixar Desenho Técnico",
-                    data=desenho_bytes,
-                    file_name=f"desenho_{qr}.pdf",
-                    mime="application/pdf",
-                    type="primary",
-                    use_container_width=True
-                )
-            except:
-                st.download_button(
-                    label="⬇️ Baixar Arquivo do Desenho",
-                    data=desenho_bytes,
-                    file_name=f"desenho_{qr}",
-                    mime="application/octet-stream",
-                    use_container_width=True
-                )
+                else:
+                    st.info("Pré-visualização disponível apenas para imagens. Use o botão abaixo para baixar o arquivo.")
+
+            st.download_button(
+                label="⬇️ Baixar Desenho Técnico",
+                data=desenho_bytes,
+                file_name=f"desenho_{qr}{ext}",
+                mime=mime,
+                type="primary",
+                use_container_width=True
+            )
         else:
             st.info("Nenhum desenho técnico cadastrado para esta peça.")
         
