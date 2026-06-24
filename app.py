@@ -24,7 +24,6 @@ from db import (
     load_gerenciar_pecas,
     load_users,
     load_operadores,
-    load_total_pecas_count,
     load_desenho_tecnico_by_qr,
     infer_desenho_mime,
 )
@@ -47,6 +46,56 @@ def _safe_pct_round(numerator: pd.Series, denominator: pd.Series, decimals: int 
     den = pd.to_numeric(denominator, errors="coerce").fillna(0.0)
     pct = num.div(den.where(den != 0)).mul(100)
     return pct.replace([float("inf"), float("-inf")], 0.0).fillna(0.0).round(decimals)
+
+
+MAX_DESENHO_BYTES = 10 * 1024 * 1024
+
+
+def _peca_data_atualizacao(peca) -> str:
+    return peca.get("data_atualizacao") or peca.get("data_conclusao") or peca.get("data_cadastro", "—")
+
+
+def _pecas_unicas_periodo(df_filtrado: pd.DataFrame) -> pd.DataFrame:
+    if df_filtrado.empty:
+        return df_filtrado
+    return df_filtrado.sort_values("data").drop_duplicates("qr_code", keep="last")
+
+
+def _etiqueta_pdf_bytes(img) -> bytes | None:
+    try:
+        buf = io.BytesIO()
+        img.save(buf, format="PDF", resolution=300)
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
+def _render_etiqueta_download(img, qr: str, label: str, *, primary: bool = False) -> bytes:
+    pdf_bytes = _etiqueta_pdf_bytes(img)
+    if pdf_bytes:
+        st.download_button(
+            label=label,
+            data=pdf_bytes,
+            file_name=f"etiqueta_{qr}.pdf",
+            mime="application/pdf",
+            type="primary" if primary else "secondary",
+            use_container_width=True,
+        )
+        return pdf_bytes
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    st.warning("PDF indisponível neste servidor. Baixando como imagem PNG.")
+    png_bytes = buf.getvalue()
+    st.download_button(
+        label=label,
+        data=png_bytes,
+        file_name=f"etiqueta_{qr}.png",
+        mime="image/png",
+        type="primary" if primary else "secondary",
+        use_container_width=True,
+    )
+    return png_bytes
 
 
 st.set_page_config(page_title="ALJ Inspeções", layout="wide")
@@ -190,21 +239,37 @@ if not st.session_state.user:
         # ====================== ESQUECI MINHA SENHA ======================
         with tab_recover:
             st.write("Informe seu **e-mail** ou **nome de usuário**:")
-            recover_input = st.text_input("E-mail ou Nome")
-            if st.button("Recuperar senha"):
-                df = read_sql("""
-                    SELECT nome, email FROM users
-                    WHERE nome = %(input)s OR email = %(input)s
-                """, params={"input": recover_input}, use_cache=False)
-                if not df.empty:
-                    st.success(f"✅ Usuário encontrado: **{df.iloc[0]['nome']}**")
-                    nova_senha_recover = st.text_input("Digite sua **nova senha**", type="password")
-                    if st.button("Alterar senha"):
-                        execute("UPDATE users SET senha = :senha WHERE nome = :input OR email = :input",
-                                  {"senha": nova_senha_recover, "input": recover_input})
-                        st.success("Senha alterada com sucesso!")
+            recover_input = st.text_input("E-mail ou Nome", key="recover_input")
+            if st.button("Buscar usuário", use_container_width=True):
+                if recover_input:
+                    df = read_sql("""
+                        SELECT nome, email FROM users
+                        WHERE nome = %(input)s OR email = %(input)s
+                    """, params={"input": recover_input}, use_cache=False)
+                    if not df.empty:
+                        st.session_state.recover_user = recover_input
+                        st.session_state.recover_user_nome = df.iloc[0]["nome"]
+                    else:
+                        st.session_state.pop("recover_user", None)
+                        st.session_state.pop("recover_user_nome", None)
+                        st.error("E-mail ou nome não encontrado!")
                 else:
-                    st.error("E-mail ou nome não encontrado!")
+                    st.error("Informe e-mail ou nome de usuário.")
+
+            if st.session_state.get("recover_user"):
+                st.success(f"✅ Usuário encontrado: **{st.session_state.recover_user_nome}**")
+                nova_senha_recover = st.text_input("Digite sua **nova senha**", type="password", key="recover_new_pw")
+                if st.button("Alterar senha", use_container_width=True):
+                    if nova_senha_recover:
+                        execute(
+                            "UPDATE users SET senha = :senha WHERE nome = :input OR email = :input",
+                            {"senha": nova_senha_recover, "input": st.session_state.recover_user},
+                        )
+                        st.session_state.pop("recover_user", None)
+                        st.session_state.pop("recover_user_nome", None)
+                        st.success("Senha alterada com sucesso!")
+                    else:
+                        st.error("Digite a nova senha.")
 
     # ==================== VÍDEO PEQUENO ====================
     with col_video:
@@ -223,7 +288,7 @@ try:
   
     logo_resized = logo_original.resize((255, 100), Image.Resampling.LANCZOS)
     st.sidebar.image(logo_resized)
-except:
+except (FileNotFoundError, OSError):
     st.sidebar.title("ALJ Inspeções")
 
 st.sidebar.success(f"👤 {st.session_state.user['nome']} ({st.session_state.user.get('funcao', '—')})")
@@ -240,10 +305,12 @@ menu = st.sidebar.radio("Menu", menu_options, key="main_menu")
 
 if menu != "🔄 Atualizar Status":
     st.session_state.pop("atualizar_status_last_pdf", None)
+    st.session_state.pop("scanned_qr", None)
 
 if menu != "🖨️ Gerar Etiqueta":
     st.session_state.pop("gerar_etiqueta_last", None)
     st.session_state.pop("gerar_etiqueta_pdf", None)
+    st.session_state.pop("gerar_etiqueta_is_pdf", None)
 
 
 def _clear_atualizar_download():
@@ -353,7 +420,7 @@ def gerar_etiqueta(qr_code, tipo_peca, cadastrado_por, responsavel,
         logo_com_fundo_branco = Image.new("RGBA", logo.size, (255, 255, 255, 255))
         logo_com_fundo_branco.paste(logo, (0, 0), logo)
         img.paste(logo_com_fundo_branco, (95, 8))
-    except:
+    except (FileNotFoundError, OSError):
         draw.text((100, 60), "ALJ Inspeções", fill="black", font=ImageFont.load_default())
 
     # ==================== QR CODE ====================
@@ -365,7 +432,7 @@ def gerar_etiqueta(qr_code, tipo_peca, cadastrado_por, responsavel,
     try:
         font_titulo = ImageFont.truetype("DejaVuSans-Bold.ttf", 40)
         font_normal = ImageFont.truetype("DejaVuSans-Bold.ttf", 30)
-    except:
+    except (OSError, IOError):
         font_titulo = font_normal = ImageFont.load_default()
 
     # ==================== FUNÇÃO DE TEXTO COM QUEBRA ====================
@@ -442,22 +509,11 @@ if menu == "➕ Cadastrar Nova Peça":
                 responsavel=peca["responsavel"],            
                 data_cadastro=peca["data_cadastro"],
                 etapa_atual=peca["etapa"],
-                data_atualizacao=peca["data_cadastro"],
+                data_atualizacao=_peca_data_atualizacao(peca),
                 atualizado_por=f"{st.session_state.user['funcao']} - {st.session_state.user['nome']}"
             )
-            
-            buf = io.BytesIO()
-            img.save(buf, format="PDF", resolution=300)
-            buf.seek(0)
-            
-            st.download_button(
-                label="📥 **BAIXAR ETIQUETA**",
-                data=buf.getvalue(),
-                file_name=f"etiqueta_{qr}.pdf",
-                mime="application/pdf",
-                type="primary",
-                use_container_width=True
-            )
+
+            _render_etiqueta_download(img, qr, "📥 **BAIXAR ETIQUETA**", primary=True)
             
             if st.button("🧹 Limpar e cadastrar nova peça", type="secondary", use_container_width=True):
                 for key in ["last_pdf", "mensagem_sucesso", "cad_tipo", "cad_etapa", "cad_obs", "cad_desenho"]:
@@ -484,27 +540,35 @@ if menu == "➕ Cadastrar Nova Peça":
                 else:
                     qr_code = f"PECA-{datetime.now(ZoneInfo('America/Sao_Paulo')).strftime('%Y%m%d%H%M%S')}"
                     agora = datetime.now(ZoneInfo("America/Sao_Paulo")).strftime("%d/%m/%Y %H:%M")
-                    desenho_bytes = desenho.read() if desenho else None
-                    
-                    execute("""INSERT INTO pecas
-                                 (qr_code, tipo_peca, cor_atual, status, etapa, responsavel, cadastrado_por,
-                                  data_cadastro, resultado, data_conclusao, responsavel_conclusao, desenho_tecnico)
-                                 VALUES (:qr_code, :tipo_peca, :cor_atual, :status, :etapa, :responsavel, :cadastrado_por,
-                                         :data_cadastro, :resultado, :data_conclusao, :responsavel_conclusao, :desenho_tecnico)""",
-                            {"qr_code": qr_code, "tipo_peca": tipo, "cor_atual": etapa_inicial, "status": "Em andamento",
-                             "etapa": etapa_inicial, "responsavel": responsavel_selecionado, "cadastrado_por": cadastrado_por_full,
-                             "data_cadastro": agora, "resultado": None, "data_conclusao": None,
-                             "responsavel_conclusao": None, "desenho_tecnico": desenho_bytes})
+                    if desenho and desenho.size > MAX_DESENHO_BYTES:
+                        st.error("❌ O desenho técnico deve ter no máximo 10 MB.")
+                    else:
+                        desenho_bytes = desenho.read() if desenho else None
 
-                    execute("""INSERT INTO historico
-                                 (qr_code, tipo_peca, etapa, cor, status, responsavel, data, observacao)
-                                 VALUES (:qr_code, :tipo_peca, :etapa, :cor, :status, :responsavel, :data, :observacao)""",
-                            {"qr_code": qr_code, "tipo_peca": tipo, "etapa": etapa_inicial, "cor": etapa_inicial,
-                             "status": "Início", "responsavel": responsavel_selecionado, "data": agora, "observacao": obs})
-                    
-                    st.session_state.last_pdf = qr_code
-                    st.session_state.mensagem_sucesso = f"✅ Peça cadastrada com sucesso! Código: **{qr_code}**"
-                    st.rerun()
+                        execute("""INSERT INTO pecas
+                                     (qr_code, tipo_peca, cor_atual, status, etapa, responsavel, cadastrado_por,
+                                      data_cadastro, data_atualizacao, resultado, data_conclusao,
+                                      responsavel_conclusao, desenho_tecnico)
+                                     VALUES (:qr_code, :tipo_peca, :cor_atual, :status, :etapa, :responsavel,
+                                             :cadastrado_por, :data_cadastro, :data_atualizacao, :resultado,
+                                             :data_conclusao, :responsavel_conclusao, :desenho_tecnico)""",
+                                {"qr_code": qr_code, "tipo_peca": tipo, "cor_atual": etapa_inicial,
+                                 "status": "Em andamento", "etapa": etapa_inicial,
+                                 "responsavel": responsavel_selecionado, "cadastrado_por": cadastrado_por_full,
+                                 "data_cadastro": agora, "data_atualizacao": agora, "resultado": None,
+                                 "data_conclusao": None, "responsavel_conclusao": None,
+                                 "desenho_tecnico": desenho_bytes})
+
+                        execute("""INSERT INTO historico
+                                     (qr_code, tipo_peca, etapa, cor, status, responsavel, data, observacao)
+                                     VALUES (:qr_code, :tipo_peca, :etapa, :cor, :status, :responsavel, :data, :observacao)""",
+                                {"qr_code": qr_code, "tipo_peca": tipo, "etapa": etapa_inicial, "cor": etapa_inicial,
+                                 "status": "Início", "responsavel": responsavel_selecionado, "data": agora,
+                                 "observacao": obs})
+
+                        st.session_state.last_pdf = qr_code
+                        st.session_state.mensagem_sucesso = f"✅ Peça cadastrada com sucesso! Código: **{qr_code}**"
+                        st.rerun()
           
 # ==================== ATUALIZAR STATUS ====================
 elif menu == "🔄 Atualizar Status":
@@ -554,13 +618,13 @@ elif menu == "🔄 Atualizar Status":
                 nova_obs = st.text_area("Observações")
                 
                 if st.button("Atualizar Status"):
+                    agora = datetime.now(ZoneInfo("America/Sao_Paulo")).strftime("%d/%m/%Y %H:%M")
+                    responsavel_full = f"{st.session_state.user['funcao']} - {st.session_state.user['nome']}"
                     if nova_etapa != peca['etapa']:
-                        agora = datetime.now(ZoneInfo("America/Sao_Paulo")).strftime("%d/%m/%Y %H:%M")
-                        responsavel_full = f"{st.session_state.user['funcao']} - {st.session_state.user['nome']}"
                         execute("""UPDATE pecas SET etapa=:etapa, cor_atual=:cor_atual, responsavel=:responsavel,
-                                            data_cadastro=:data_cadastro WHERE qr_code=:qr_code""",
+                                            data_atualizacao=:data_atualizacao WHERE qr_code=:qr_code""",
                                   {"etapa": nova_etapa, "cor_atual": nova_etapa, "responsavel": responsavel_full,
-                                   "data_cadastro": agora, "qr_code": qr_input})
+                                   "data_atualizacao": agora, "qr_code": qr_input})
                         execute("""INSERT INTO historico
                                      (qr_code, tipo_peca, etapa, cor, status, responsavel, data, observacao)
                                      VALUES (:qr_code, :tipo_peca, :etapa, :cor, :status, :responsavel, :data, :observacao)""",
@@ -570,6 +634,17 @@ elif menu == "🔄 Atualizar Status":
                         st.session_state.atualizar_status_last_pdf = qr_input
                         st.toast("✅ Status atualizado!", icon="🎉")
                         st.rerun()
+                    elif nova_obs.strip():
+                        execute("""INSERT INTO historico
+                                     (qr_code, tipo_peca, etapa, cor, status, responsavel, data, observacao)
+                                     VALUES (:qr_code, :tipo_peca, :etapa, :cor, :status, :responsavel, :data, :observacao)""",
+                                  {"qr_code": qr_input, "tipo_peca": peca['tipo_peca'], "etapa": peca['etapa'],
+                                   "cor": peca['cor_atual'], "status": "Atualizado", "responsavel": responsavel_full,
+                                   "data": agora, "observacao": nova_obs})
+                        st.toast("✅ Observação registrada!", icon="📝")
+                        st.rerun()
+                    else:
+                        st.warning("Selecione uma etapa diferente ou adicione uma observação.")
                 
                 if peca['etapa'] == "Inspeção Final":
                     st.divider()
@@ -617,21 +692,11 @@ elif menu == "🔄 Atualizar Status":
                 responsavel=peca["responsavel"],
                 data_cadastro=peca["data_cadastro"],
                 etapa_atual=peca["etapa"],
-                data_atualizacao=peca.get("data_conclusao") or peca["data_cadastro"],
+                data_atualizacao=_peca_data_atualizacao(peca),
                 atualizado_por=f"{st.session_state.user['funcao']} - {st.session_state.user['nome']}"
             )
 
-            buf = io.BytesIO()
-            img.save(buf, format="PDF", resolution=300)
-            buf.seek(0)
-            st.download_button(
-                label="📄 **BAIXAR ETIQUETA ATUALIZADA**",
-                data=buf.getvalue(),
-                file_name=f"etiqueta_{qr_download}.pdf",
-                mime="application/pdf",
-                type="primary",
-                use_container_width=True
-            )
+            _render_etiqueta_download(img, qr_download, "📄 **BAIXAR ETIQUETA ATUALIZADA**", primary=True)
               
 # ==================== GERENCIAR PEÇAS ====================
 elif menu == "🗑️ Gerenciar Peças":
@@ -699,9 +764,11 @@ elif menu == "📋 Lista de Peças":
             "etapa": "Etapa",
             "status": "Status",
             "responsavel": "Responsável",
-            "data_cadastro": "Data Atualização"
+            "data_atualizacao": "Data Atualização",
         })
-        df_andamento = df_andamento[["qr_code", "Tipo da Peça", "Etapa", "Status", "Responsável", "Data Atualização"]]
+        df_andamento = df_andamento[
+            ["qr_code", "Tipo da Peça", "Etapa", "Status", "Responsável", "Data Atualização"]
+        ]
       
     df_concluidas = load_pecas_concluidas_full()
     
@@ -793,9 +860,8 @@ elif menu == "📈 Produtividade":
             df_filtrado = df_hist.copy()
 
         df_insp = df_hist[
-            df_hist["status"].isin(["Atualizado", "Concluída"])
-            & df_hist["responsavel"].astype(str).str.startswith("Inspetor de Qualidade")
-        ][["responsavel", "status", "id"]]
+            df_hist["responsavel"].astype(str).str.startswith("Inspetor de Qualidade")
+        ][["responsavel", "status", "id", "resultado"]]
 
         df_pecas_concluidas = load_pecas_concluidas_full()
 
@@ -810,12 +876,16 @@ elif menu == "📈 Produtividade":
             
             concluidas = df_filtrado[df_filtrado['status'] == 'Concluída'].groupby('responsavel').agg(
                 Concluidas=('qr_code', 'nunique'),
-                Aprovadas=('status', lambda x: (x == 'Concluída').sum()),
-                Retrabalho=('etapa_atual', lambda x: (x == 'Retrabalho/Não Conforme').sum())
+                Aprovadas=('resultado', lambda x: (x == 'Aprovado').sum()),
+                Reprovadas=('resultado', lambda x: (x == 'Reprovado').sum()),
+                Retrabalho=('etapa_atual', lambda x: (x == 'Retrabalho/Não Conforme').sum()),
             ).reset_index()
-            
+
             op = op.merge(concluidas, on='responsavel', how='left').fillna(0)
-            op = op.astype({'Total_Cadastradas': 'int', 'Concluidas': 'int', 'Aprovadas': 'int', 'Retrabalho': 'int'})
+            op = op.astype({
+                'Total_Cadastradas': 'int', 'Concluidas': 'int', 'Aprovadas': 'int',
+                'Reprovadas': 'int', 'Retrabalho': 'int',
+            })
             
             op['Taxa_Conclusao_%'] = _safe_pct_round(op['Concluidas'], op['Total_Cadastradas'])
             op['Taxa_Aprovacao_%'] = _safe_pct_round(op['Aprovadas'], op['Concluidas'])
@@ -828,22 +898,43 @@ elif menu == "📈 Produtividade":
 
             if df_insp.empty:
                 st.info("Ainda não há atualizações de Inspetores.")
-                insp = pd.DataFrame()  
+                insp = pd.DataFrame()
             else:
-                insp = df_insp.groupby('responsavel').agg(
-                    Total_Inspecionadas=('id', 'count'),
-                    Aprovadas=('status', lambda x: (x == 'Concluída').sum()),
-                ).reset_index()
-                
-                insp = insp.astype({'Total_Inspecionadas': 'int', 'Aprovadas': 'int'})
-                insp['Taxa_Aprovacao_%'] = _safe_pct_round(insp['Aprovadas'], insp['Total_Inspecionadas'])
+                insp_updates = df_insp[df_insp['status'] == 'Atualizado']
+                insp_conclusions = df_insp[df_insp['status'] == 'Concluída']
 
-                reprovadas = df_insp[df_insp['status'] == 'Concluída'].groupby('responsavel').size().reset_index(name='Reprovadas')
-                insp = insp.merge(reprovadas, on='responsavel', how='left').fillna(0)
-                insp['Taxa_Reprovacao_%'] = _safe_pct_round(insp['Reprovadas'], insp['Total_Inspecionadas'])
-                
-                st.dataframe(insp[['responsavel', 'Total_Inspecionadas', 'Aprovadas', 'Reprovadas',
-                                  'Taxa_Aprovacao_%', 'Taxa_Reprovacao_%']], use_container_width=True)
+                if insp_updates.empty and insp_conclusions.empty:
+                    st.info("Ainda não há atualizações de Inspetores.")
+                    insp = pd.DataFrame()
+                else:
+                    if not insp_updates.empty:
+                        insp = insp_updates.groupby('responsavel').agg(
+                            Total_Inspecionadas=('id', 'count'),
+                        ).reset_index()
+                    else:
+                        insp = pd.DataFrame(columns=['responsavel', 'Total_Inspecionadas'])
+
+                    if not insp_conclusions.empty:
+                        concl_agg = insp_conclusions.groupby('responsavel').agg(
+                            Aprovadas=('resultado', lambda x: (x == 'Aprovado').sum()),
+                            Reprovadas=('resultado', lambda x: (x == 'Reprovado').sum()),
+                        ).reset_index()
+                        insp = insp.merge(concl_agg, on='responsavel', how='outer')
+                    else:
+                        insp['Aprovadas'] = 0
+                        insp['Reprovadas'] = 0
+
+                    insp = insp.fillna(0).astype({
+                        'Total_Inspecionadas': 'int', 'Aprovadas': 'int', 'Reprovadas': 'int',
+                    })
+                    insp['Total_Conclusoes'] = insp['Aprovadas'] + insp['Reprovadas']
+                    insp['Taxa_Aprovacao_%'] = _safe_pct_round(insp['Aprovadas'], insp['Total_Conclusoes'])
+                    insp['Taxa_Reprovacao_%'] = _safe_pct_round(insp['Reprovadas'], insp['Total_Conclusoes'])
+                    st.dataframe(
+                        insp[['responsavel', 'Total_Inspecionadas', 'Aprovadas', 'Reprovadas',
+                              'Taxa_Aprovacao_%', 'Taxa_Reprovacao_%']],
+                        use_container_width=True,
+                    )
 
         # ====================== TOP 3 ======================
         with tab_top3:
@@ -869,6 +960,9 @@ elif menu == "📈 Produtividade":
             elif periodo != "Acumulado do Ano" and periodo != "─":
                 df_pecas_periodo = _filtrar_pecas_por_mes(df_pecas_periodo, periodo)
             
+            pecas_periodo = _pecas_unicas_periodo(df_filtrado)
+            cadastradas_periodo = df_filtrado[df_filtrado['status'] == 'Início']['qr_code'].nunique()
+
             geral = pd.DataFrame({
                 'Métrica': [
                     'Total de Peças Cadastradas',
@@ -879,10 +973,10 @@ elif menu == "📈 Produtividade":
                     '❌ Reprovadas'
                 ],
                 'Quantidade': [
-                    load_total_pecas_count(),
-                    len(df_filtrado[df_filtrado['etapa_atual'] == 'Inspeção Preliminar']),
-                    len(df_filtrado[df_filtrado['etapa_atual'] == 'Retrabalho/Não Conforme']),
-                    len(df_filtrado[df_filtrado['etapa_atual'] == 'Inspeção Final']),
+                    cadastradas_periodo,
+                    pecas_periodo[pecas_periodo['etapa_atual'] == 'Inspeção Preliminar']['qr_code'].nunique(),
+                    pecas_periodo[pecas_periodo['etapa_atual'] == 'Retrabalho/Não Conforme']['qr_code'].nunique(),
+                    pecas_periodo[pecas_periodo['etapa_atual'] == 'Inspeção Final']['qr_code'].nunique(),
                     len(df_pecas_periodo[df_pecas_periodo['resultado'] == 'Aprovado']),
                     len(df_pecas_periodo[df_pecas_periodo['resultado'] == 'Reprovado'])
                 ]
@@ -920,19 +1014,22 @@ elif menu == "🖨️ Gerar Etiqueta":
                     responsavel=peca["responsavel"],
                     data_cadastro=peca["data_cadastro"],
                     etapa_atual=peca["etapa"],
-                    data_atualizacao=peca.get("data_conclusao") or peca["data_cadastro"],
+                    data_atualizacao=_peca_data_atualizacao(peca),
                     atualizado_por=peca.get("responsavel", "—")
                 )
-                buf = io.BytesIO()
-                img.save(buf, format="PDF", resolution=300)
+                pdf_bytes = _etiqueta_pdf_bytes(img)
                 st.session_state.gerar_etiqueta_last = qr_input
-                st.session_state.gerar_etiqueta_pdf = buf.getvalue()
+                if pdf_bytes:
+                    st.session_state.gerar_etiqueta_pdf = pdf_bytes
+                    st.session_state.gerar_etiqueta_is_pdf = True
+                else:
+                    buf = io.BytesIO()
+                    img.save(buf, format="PNG")
+                    st.session_state.gerar_etiqueta_pdf = buf.getvalue()
+                    st.session_state.gerar_etiqueta_is_pdf = False
                 st.rerun()
 
-            if (
-                st.session_state.get("gerar_etiqueta_last") == qr_input
-                and st.session_state.get("gerar_etiqueta_pdf")
-            ):
+            if st.session_state.get("gerar_etiqueta_last") == qr_input and st.session_state.get("gerar_etiqueta_pdf") is not None:
                 img = gerar_etiqueta(
                     qr_code=qr_input,
                     tipo_peca=peca["tipo_peca"],
@@ -940,16 +1037,25 @@ elif menu == "🖨️ Gerar Etiqueta":
                     responsavel=peca["responsavel"],
                     data_cadastro=peca["data_cadastro"],
                     etapa_atual=peca["etapa"],
-                    data_atualizacao=peca.get("data_conclusao") or peca["data_cadastro"],
+                    data_atualizacao=_peca_data_atualizacao(peca),
                     atualizado_por=peca.get("responsavel", "—")
                 )
                 st.image(img, caption="Pré-visualização da Etiqueta", use_container_width=True)
-                st.download_button(
-                    label="📄 Baixar Etiqueta",
-                    data=st.session_state.gerar_etiqueta_pdf,
-                    file_name=f"etiqueta_{qr_input}.pdf",
-                    mime="application/pdf"
-                )
+                if st.session_state.get("gerar_etiqueta_is_pdf"):
+                    st.download_button(
+                        label="📄 Baixar Etiqueta",
+                        data=st.session_state.gerar_etiqueta_pdf,
+                        file_name=f"etiqueta_{qr_input}.pdf",
+                        mime="application/pdf",
+                    )
+                else:
+                    st.warning("PDF indisponível neste servidor. Baixando como imagem PNG.")
+                    st.download_button(
+                        label="📄 Baixar Etiqueta (PNG)",
+                        data=st.session_state.gerar_etiqueta_pdf,
+                        file_name=f"etiqueta_{qr_input}.png",
+                        mime="image/png",
+                    )
         else:
             st.error("QR Code não encontrado!")
     else:

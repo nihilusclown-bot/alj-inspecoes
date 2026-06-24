@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS pecas (
     responsavel           TEXT,
     cadastrado_por        TEXT,
     data_cadastro         TEXT,
+    data_atualizacao      TEXT,
     resultado             TEXT,
     data_conclusao        TEXT,
     responsavel_conclusao TEXT,
@@ -48,6 +49,12 @@ CREATE TABLE IF NOT EXISTS historico (
 
 CREATE INDEX IF NOT EXISTS idx_historico_qr_code ON historico(qr_code);
 CREATE INDEX IF NOT EXISTS idx_pecas_resultado ON pecas(resultado);
+"""
+
+MIGRATION_SQL = """
+ALTER TABLE pecas ADD COLUMN IF NOT EXISTS data_atualizacao TEXT;
+UPDATE pecas SET data_atualizacao = data_cadastro
+WHERE data_atualizacao IS NULL AND data_cadastro IS NOT NULL;
 """
 
 SEED_ADMIN_SQL = """
@@ -105,6 +112,10 @@ def main():
     engine = create_engine(_get_database_url(), poolclass=NullPool, pool_pre_ping=True)
     with engine.begin() as conn:
         for statement in SCHEMA_SQL.strip().split(";"):
+            statement = statement.strip()
+            if statement:
+                conn.execute(text(statement))
+        for statement in MIGRATION_SQL.strip().split(";"):
             statement = statement.strip()
             if statement:
                 conn.execute(text(statement))

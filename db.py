@@ -13,7 +13,7 @@ CACHE_TTL = 60
 # Exclude desenho_tecnico (BYTEA) — not serializable by @st.cache_data
 PECAS_COLS = """
     qr_code, tipo_peca, cor_atual, status, etapa, responsavel, cadastrado_por,
-    data_cadastro, resultado, data_conclusao, responsavel_conclusao
+    data_cadastro, data_atualizacao, resultado, data_conclusao, responsavel_conclusao
 """
 
 
@@ -150,7 +150,8 @@ def load_pecas_ativas_full() -> pd.DataFrame:
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def load_pecas_ativas_listagem() -> pd.DataFrame:
     return _read_sql_uncached("""
-        SELECT qr_code, tipo_peca, etapa, status, responsavel, data_cadastro
+        SELECT qr_code, tipo_peca, etapa, status, responsavel,
+               COALESCE(data_atualizacao, data_cadastro) AS data_atualizacao
         FROM pecas
         WHERE resultado IS NULL OR resultado = ''
     """)
@@ -281,12 +282,16 @@ def load_historico_publico_by_qr(qr: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def load_produtividade_historico() -> pd.DataFrame:
-    return _read_sql_uncached("""
-        SELECT h.*, p.etapa as etapa_atual,
-               SUBSTRING(h.data FROM 7 FOR 4) || '-' || SUBSTRING(h.data FROM 4 FOR 2) as mes
+    df = _read_sql_uncached("""
+        SELECT h.*, p.etapa AS etapa_atual, p.resultado
         FROM historico h
         LEFT JOIN pecas p ON h.qr_code = p.qr_code
     """)
+    if df.empty:
+        return df
+    datas = pd.to_datetime(df["data"], format="%d/%m/%Y %H:%M", errors="coerce")
+    df["mes"] = datas.dt.strftime("%Y-%m")
+    return df
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
