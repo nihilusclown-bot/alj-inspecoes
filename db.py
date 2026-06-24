@@ -51,7 +51,7 @@ host = "aws-1-us-east-1.pooler.supabase.com"
 port = 5432
 database = "postgres"
 username = "postgres.viqwzdcrmutgfvebszrg"
-password = "mec447alj@teste"
+password = "your-supabase-database-password"
 
 """,
         language="toml",
@@ -182,12 +182,17 @@ def load_pecas_concluidas_resumo() -> pd.DataFrame:
     """)
 
 
-@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
-def load_peca_by_qr(qr: str) -> pd.DataFrame:
+def fetch_peca_by_qr(qr: str) -> pd.DataFrame:
+    """Uncached — use on the public QR page for live data."""
     return _read_sql_uncached(
         f"SELECT {PECAS_COLS} FROM pecas WHERE qr_code = %(qr)s",
         params={"qr": qr},
     )
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def load_peca_by_qr(qr: str) -> pd.DataFrame:
+    return fetch_peca_by_qr(qr)
 
 
 def normalize_bytea(value) -> bytes | None:
@@ -199,17 +204,33 @@ def normalize_bytea(value) -> bytes | None:
             return None
     except (TypeError, ValueError):
         pass
-    if isinstance(value, memoryview):
-        return value.tobytes()
-    if isinstance(value, bytearray):
-        return bytes(value)
-    if isinstance(value, bytes):
-        return value
-    if isinstance(value, str):
-        if value.startswith("\\x"):
-            return bytes.fromhex(value[2:])
-        return value.encode()
-    return bytes(value)
+    try:
+        if isinstance(value, memoryview):
+            data = value.tobytes()
+        elif isinstance(value, bytearray):
+            data = bytes(value)
+        elif isinstance(value, bytes):
+            data = value
+        elif isinstance(value, str):
+            if value.startswith("\\x"):
+                data = bytes.fromhex(value[2:])
+            else:
+                data = value.encode()
+        else:
+            data = bytes(value)
+        return data if data else None
+    except (TypeError, ValueError):
+        return None
+
+
+def infer_desenho_mime(data: bytes) -> tuple[str, str]:
+    if data.startswith(b"%PDF"):
+        return "application/pdf", ".pdf"
+    if data.startswith(b"\x89PNG"):
+        return "image/png", ".png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg", ".jpg"
+    return "application/octet-stream", ".bin"
 
 
 def load_desenho_tecnico_by_qr(qr: str) -> bytes | None:
@@ -220,8 +241,21 @@ def load_desenho_tecnico_by_qr(qr: str) -> bytes | None:
     )
     if df.empty:
         return None
-    data = normalize_bytea(df.iloc[0]["desenho_tecnico"])
-    return data if data else None
+    return normalize_bytea(df.iloc[0]["desenho_tecnico"])
+
+
+def fetch_historico_publico_by_qr(qr: str) -> pd.DataFrame:
+    """Uncached — use on the public QR page for live data."""
+    return _read_sql_uncached("""
+        SELECT data AS "Data/Hora",
+               responsavel AS "Responsável",
+               etapa AS "Etapa",
+               status AS "Status",
+               observacao AS "Comentário"
+        FROM historico
+        WHERE qr_code = %(qr)s
+        ORDER BY data ASC
+    """, params={"qr": qr})
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
@@ -242,16 +276,7 @@ def load_historico_by_qr(qr: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def load_historico_publico_by_qr(qr: str) -> pd.DataFrame:
-    return _read_sql_uncached("""
-        SELECT data AS "Data/Hora",
-               responsavel AS "Responsável",
-               etapa AS "Etapa",
-               status AS "Status",
-               observacao AS "Comentário"
-        FROM historico
-        WHERE qr_code = %(qr)s
-        ORDER BY data ASC
-    """, params={"qr": qr})
+    return fetch_historico_publico_by_qr(qr)
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
